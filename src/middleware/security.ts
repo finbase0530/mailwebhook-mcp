@@ -66,12 +66,75 @@ export function createSecurityMiddleware(env: Env) {
         return authManager.createConfigurationErrorResponse();
       }
 
-      // 提取认证令牌
-      const token = authManager.extractToken(c);
+      // 检查是否是SSE连接端点
+      const isSSEEndpoint = path.startsWith('/mcp/sse') && c.req.method === 'GET';
       
-      // 验证令牌
-      if (!authManager.verifyApiToken(token)) {
-        return authManager.createUnauthorizedResponse();
+      if (isSSEEndpoint) {
+        // 使用SSE专用的认证验证
+        const authResult = authManager.verifySSEAuth(c);
+        
+        if (!authResult.valid) {
+          console.warn(`SSE连接认证失败: ${authResult.reason}, path: ${path}`);
+          
+          // 对于SSE连接，返回特殊的错误响应
+          return new Response(
+            JSON.stringify({
+              error: 'SSE认证失败',
+              message: authResult.reason || '认证失败',
+              code: 'SSE_AUTH_FAILED',
+              hint: 'SSE连接请在URL查询参数中提供token参数，如: ?token=your-api-token'
+            }),
+            {
+              status: 401,
+              headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'WWW-Authenticate': 'Bearer realm="MCP SSE Server"'
+              }
+            }
+          );
+        }
+      } else {
+        // 使用标准的认证验证
+        const token = authManager.extractToken(c);
+        
+        // 验证令牌
+        if (!authManager.verifyApiToken(token)) {
+          return authManager.createUnauthorizedResponse();
+        }
+      }
+
+      await next();
+    },
+
+    // SSE专用的认证中间件
+    sseAuth: async (c: Context, next: Next) => {
+      // 检查是否需要认证
+      if (!authManager.isAuthRequired()) {
+        await next();
+        return;
+      }
+
+      // 使用SSE专用的认证验证
+      const authResult = authManager.verifySSEAuth(c);
+      
+      if (!authResult.valid) {
+        console.warn(`SSE认证失败: ${authResult.reason}, path: ${c.req.path}`);
+        
+        return new Response(
+          JSON.stringify({
+            error: 'SSE认证失败',
+            message: authResult.reason || '认证失败',
+            code: 'SSE_AUTH_FAILED',
+            hint: 'SSE连接请在URL查询参数中提供token参数，如: ?token=your-api-token'
+          }),
+          {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'WWW-Authenticate': 'Bearer realm="MCP SSE Server"'
+            }
+          }
+        );
       }
 
       await next();

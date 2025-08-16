@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { Env } from './types';
 import { McpHandler } from './handlers/mcpHandler';
+import { McpHandlerSSE } from './handlers/mcpHandlerSSE';
+import { McpHandlerSSESimplified } from './handlers/mcpHandlerSSESimplified';
 import { createSecurityMiddleware } from './middleware/security';
 
 // 创建 Hono 应用实例
@@ -25,7 +27,9 @@ app.notFound((c) => {
       'GET /health - 健康检查',
       'POST /mcp/initialize - MCP 初始化',
       'GET /mcp/tools - 获取工具列表',
-      'POST /mcp/tools/call - 调用工具'
+      'POST /mcp/tools/call - 调用工具',
+      'GET /mcp/sse - SSE 连接端点',
+      'POST /mcp/sse/{sessionId}/messages - SSE 消息发送'
     ]
   }, 404);
 });
@@ -120,6 +124,8 @@ app.route('/mcp', createMcpRoutes());
 function createMcpRoutes() {
   const mcpApp = new Hono<{ Bindings: Env }>();
   
+  // === 传统的 HTTP MCP 路由 ===
+  
   // MCP 初始化
   mcpApp.post('/initialize', async (c) => {
     const handler = new McpHandler(c.env);
@@ -136,6 +142,50 @@ function createMcpRoutes() {
   mcpApp.post('/tools/call', async (c) => {
     const handler = new McpHandler(c.env);
     return await handler.handleCallTool(c);
+  });
+  
+  // === SSE MCP 路由 ===
+  
+  // 简化的SSE连接端点（推荐使用）
+  mcpApp.get('/sse', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSimplifiedSSEConnection(c);
+  });
+  
+  // SSE 状态查询端点
+  mcpApp.get('/sse/status', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSSEStatus(c);
+  });
+  
+  // SSE 健康检查端点
+  mcpApp.get('/sse/health', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSSEHealthCheck(c);
+  });
+  
+  // SSE 使用说明端点
+  mcpApp.get('/sse/instructions', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSSEInstructions(c);
+  });
+  
+  // === 保留的复杂SSE路由（实验性，存在Workers限制）===
+  
+  // 注意：以下端点存在Cloudflare Workers的I/O共享限制，仅用于展示完整实现
+  mcpApp.get('/sse/experimental', async (c) => {
+    const handler = new McpHandlerSSE(c.env);
+    return await handler.handleSSEConnection(c);
+  });
+  
+  mcpApp.post('/sse/experimental/:sessionId/messages', async (c) => {
+    const handler = new McpHandlerSSE(c.env);
+    return await handler.handleSSEMessage(c);
+  });
+  
+  mcpApp.get('/sse/experimental/:sessionId/status', async (c) => {
+    const handler = new McpHandlerSSE(c.env);
+    return await handler.handleSSESessionStatus(c);
   });
   
   // 处理 CORS 预检请求
@@ -157,9 +207,23 @@ app.get('/', (c) => {
     endpoints: {
       health: 'GET /health',
       mcp: {
-        initialize: 'POST /mcp/initialize',
-        listTools: 'GET /mcp/tools',
-        callTool: 'POST /mcp/tools/call'
+        http: {
+          initialize: 'POST /mcp/initialize',
+          listTools: 'GET /mcp/tools',
+          callTool: 'POST /mcp/tools/call'
+        },
+        sse: {
+          connect: 'GET /mcp/sse?token=your-api-token',
+          withMessage: 'GET /mcp/sse?token=your-token&method=<method>&params=<json>&id=<id>',
+          status: 'GET /mcp/sse/status',
+          health: 'GET /mcp/sse/health',
+          instructions: 'GET /mcp/sse/instructions',
+          experimental: {
+            note: 'Experimental endpoints with Cloudflare Workers limitations',
+            connect: 'GET /mcp/sse/experimental',
+            messages: 'POST /mcp/sse/experimental/{sessionId}/messages'
+          }
+        }
       }
     },
     tools: [
@@ -362,6 +426,146 @@ app.get('/admin/security/health', async (c) => {
     return c.json({
       success: false,
       error: error instanceof Error ? error.message : '安全健康检查失败'
+    }, 500);
+  }
+});
+
+// === SSE 管理端点 ===
+
+// 获取SSE统计信息
+app.get('/admin/sse/stats', async (c) => {
+  try {
+    const simplifiedHandler = new McpHandlerSSESimplified(c.env);
+    const complexHandler = new McpHandlerSSE(c.env);
+    
+    return c.json({
+      success: true,
+      data: {
+        simplified: {
+          status: 'active',
+          description: '简化SSE实现，适合Cloudflare Workers环境',
+          features: ['无状态', 'URL参数消息', '单请求生命周期']
+        },
+        experimental: {
+          sessions: complexHandler.getSessionStats(),
+          health: complexHandler.getSSEHealthCheck(),
+          note: '实验性实现，存在Workers I/O限制'
+        },
+        recommendations: {
+          production: 'Use simplified SSE (/mcp/sse)',
+          testing: 'Use experimental SSE (/mcp/sse/experimental) for advanced features'
+        },
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : '获取SSE统计信息失败'
+    }, 500);
+  }
+});
+
+// 清理过期的SSE会话
+app.post('/admin/sse/cleanup', async (c) => {
+  try {
+    const handler = new McpHandlerSSE(c.env);
+    const cleanedCount = handler.cleanupExpiredSessions();
+    
+    return c.json({
+      success: true,
+      message: `已清理 ${cleanedCount} 个过期的SSE会话`,
+      data: { cleanedSessions: cleanedCount }
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : 'SSE会话清理失败'
+    }, 500);
+  }
+});
+
+// 向所有SSE会话发送心跳
+app.post('/admin/sse/heartbeat', async (c) => {
+  try {
+    const handler = new McpHandlerSSE(c.env);
+    const result = await handler.sendHeartbeatToAll();
+    
+    return c.json({
+      success: true,
+      message: `心跳发送完成：成功 ${result.sent} 个，失败 ${result.failed} 个`,
+      data: result
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : '发送心跳失败'
+    }, 500);
+  }
+});
+
+// 向所有SSE会话广播消息
+app.post('/admin/sse/broadcast', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { message } = body;
+    
+    if (!message) {
+      return c.json({
+        success: false,
+        error: '缺少消息内容'
+      }, 400);
+    }
+    
+    const handler = new McpHandlerSSE(c.env);
+    const result = await handler.broadcastToAllSessions(message);
+    
+    return c.json({
+      success: true,
+      message: `广播完成：成功 ${result.sent} 个，失败 ${result.failed} 个`,
+      data: result
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : '广播消息失败'
+    }, 500);
+  }
+});
+
+// 向特定SSE会话发送消息
+app.post('/admin/sse/send/:sessionId', async (c) => {
+  try {
+    const sessionId = c.req.param('sessionId');
+    const body = await c.req.json();
+    const { message } = body;
+    
+    if (!message) {
+      return c.json({
+        success: false,
+        error: '缺少消息内容'
+      }, 400);
+    }
+    
+    const handler = new McpHandlerSSE(c.env);
+    const success = await handler.sendToSession(sessionId, message);
+    
+    if (success) {
+      return c.json({
+        success: true,
+        message: '消息发送成功',
+        data: { sessionId }
+      });
+    } else {
+      return c.json({
+        success: false,
+        error: '会话不存在或发送失败'
+      }, 404);
+    }
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : '发送消息失败'
     }, 500);
   }
 });

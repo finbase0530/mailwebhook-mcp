@@ -37,13 +37,59 @@ export class AuthManager {
       return authHeader;
     }
 
-    // 也支持从查询参数中获取
+    // 也支持从查询参数中获取（主要用于SSE连接）
     const tokenParam = c.req.query('token');
     if (tokenParam) {
       return `Bearer ${tokenParam}`;
     }
 
     return null;
+  }
+
+  // 专门为SSE连接提取认证令牌
+  extractSSEToken(c: Context): string | null {
+    // 优先从查询参数获取（SSE连接通常使用这种方式）
+    const tokenParam = c.req.query('token');
+    if (tokenParam) {
+      return `Bearer ${tokenParam}`;
+    }
+
+    // 备选：从Authorization头获取
+    const authHeader = c.req.header('Authorization');
+    if (authHeader) {
+      return authHeader;
+    }
+
+    // 备选：从自定义头获取（某些SSE客户端可能使用）
+    const mcpTokenHeader = c.req.header('X-MCP-Token');
+    if (mcpTokenHeader) {
+      return `Bearer ${mcpTokenHeader}`;
+    }
+
+    return null;
+  }
+
+  // 验证SSE连接的认证
+  verifySSEAuth(c: Context): { valid: boolean; reason?: string } {
+    // 检查是否需要认证
+    if (!this.isAuthRequired()) {
+      return { valid: true };
+    }
+
+    // 验证必要的安全配置
+    if (!this.env.MCP_API_TOKEN) {
+      return { valid: false, reason: 'MCP_API_TOKEN未配置' };
+    }
+
+    // 提取SSE认证令牌
+    const token = this.extractSSEToken(c);
+    
+    // 验证令牌
+    if (!this.verifyApiToken(token)) {
+      return { valid: false, reason: '无效的API令牌' };
+    }
+
+    return { valid: true };
   }
 
   // 验证请求来源
