@@ -1,0 +1,94 @@
+# Dependencies
+node_modules/
+.pnpm-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+.wrangler/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Dependency directories
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Yarn
+.yarn-integrity
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Wrangler secrets and configuration (敏感信息)
+.dev.vars
+wrangler.toml.backup
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test results and temporary files
+test_results_*.json
+*.tmp
+*.temp
+
+# Old test files with hardcoded credentials (if any)
+debug_test.py
+test_emoji_fix.py
+test_email_only.py
+test_encoding_fix.py
+test_mcp_email.py
+
+# Backup files
+*.bak
+*.backup
+
+# Local configuration files
+config.local.json
+settings.local.json
+
+# Security and sensitive files
+secrets.json
+credentials.json
+auth.json
+tokens.txt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Database files (if any)
+*.db
+*.sqlite
+*.sqlite3
