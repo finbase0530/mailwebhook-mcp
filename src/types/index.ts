@@ -132,3 +132,140 @@ export interface SecurityValidation {
   errors: string[];
   warnings: string[];
 }
+
+// SSE 相关类型定义
+export interface SSEEventData {
+  type: string;
+  data: any;
+  id?: string;
+  retry?: number;
+}
+
+// JSON-RPC 2.0 消息格式
+export interface JsonRpcMessage {
+  jsonrpc: '2.0';
+  id?: string | number | null;
+  method?: string;
+  params?: Record<string, any> | any[];
+  result?: any;
+  error?: {
+    code: number;
+    message: string;
+    data?: any;
+  };
+}
+
+// MCP 初始化请求
+export interface McpInitializeRequest extends JsonRpcMessage {
+  method: 'initialize';
+  params: {
+    protocolVersion: string;
+    capabilities: {
+      roots?: { listChanged?: boolean };
+      sampling?: Record<string, any>;
+    };
+    clientInfo: {
+      name: string;
+      version: string;
+    };
+  };
+}
+
+// MCP 初始化响应
+export interface McpInitializeResponse extends JsonRpcMessage {
+  result: {
+    protocolVersion: string;
+    capabilities: {
+      tools?: Record<string, any>;
+      resources?: Record<string, any>;
+      prompts?: Record<string, any>;
+    };
+    serverInfo: {
+      name: string;
+      version: string;
+    };
+  };
+}
+
+// MCP 工具列表请求
+export interface McpListToolsRequest extends JsonRpcMessage {
+  method: 'tools/list';
+  params?: Record<string, any>;
+}
+
+// MCP 工具列表响应
+export interface McpListToolsResponse extends JsonRpcMessage {
+  result: {
+    tools: McpTool[];
+  };
+}
+
+// MCP 工具调用请求
+export interface McpCallToolRequest extends JsonRpcMessage {
+  method: 'tools/call';
+  params: {
+    name: string;
+    arguments?: Record<string, any>;
+  };
+}
+
+// MCP 工具调用响应
+export interface McpCallToolResponse extends JsonRpcMessage {
+  result: {
+    content: Array<{
+      type: 'text' | 'image' | 'resource';
+      text?: string;
+      data?: string;
+      mimeType?: string;
+    }>;
+    isError?: boolean;
+  };
+}
+
+// MCP 错误响应
+export interface McpErrorResponse extends JsonRpcMessage {
+  error: {
+    code: number;
+    message: string;
+    data?: any;
+  };
+}
+
+// SSE 会话信息
+export interface SSESessionInfo {
+  id: string;
+  createdAt: Date;
+  lastActivityAt: Date;
+  clientInfo?: {
+    userAgent?: string;
+    ip?: string;
+  };
+}
+
+// SSE 传输配置
+export interface SSETransportConfig {
+  sessionTimeout: number;
+  maxSessions: number;
+  heartbeatInterval: number;
+  corsOrigin: string;
+}
+
+// MCP 错误代码枚举
+export enum McpErrorCode {
+  ParseError = -32700,
+  InvalidRequest = -32600,
+  MethodNotFound = -32601,
+  InvalidParams = -32602,
+  InternalError = -32603,
+  ServerError = -32000, // 到 -32099 的服务器错误范围
+}
+
+// SSE 事件类型枚举
+export enum SSEEventType {
+  Message = 'message',
+  Error = 'error',
+  Heartbeat = 'heartbeat',
+  Endpoint = 'endpoint',
+  Close = 'close',
+  Auth = 'auth'
+}

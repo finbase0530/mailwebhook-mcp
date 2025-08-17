@@ -6,6 +6,8 @@
 
 这是一个基于 Cloudflare Workers 的 MCP (Model Context Protocol) 服务器，为 AI 助手提供邮件发送功能工具。项目通过调用 qqwebhook 邮件服务的 REST API，将邮件功能封装为 MCP 工具，使 AI 助手能够发送邮件、管理模板和查询邮件状态。
 
+**🆕 现已支持SSE模式**：项目新增Server-Sent Events (SSE) 传输模式，为需要实时通信的MCP客户端提供更好的支持。
+
 ## 开发命令
 
 ### 核心命令
@@ -13,6 +15,105 @@
 - `npm run deploy` - 部署到默认环境
 -  优先使用 npx wrangler deploy --env production  进行生产环境部署
 - `npm run deploy:prod` - 部署到生产环境 ✅ **已成功部署**
+
+## SSE模式MCP服务器 🚀 (NEW)
+
+### SSE模式概述
+项目现已支持通过Server-Sent Events (SSE) 提供实时MCP协议服务，同时保持与现有REST API的完全兼容性。SSE模式特别适合需要实时通信的AI助手和MCP客户端。
+
+### SSE模式特点
+- ✅ **实时双向通信** - 通过SSE事件流实现实时响应
+- ✅ **完整MCP协议支持** - 支持JSON-RPC 2.0和MCP 2024-11-05规范
+- ✅ **Workers环境优化** - 专为Cloudflare Workers环境设计，无跨请求状态依赖
+- ✅ **统一认证** - 使用相同的MCP_API_TOKEN进行安全认证
+- ✅ **向后兼容** - 不影响现有HTTP API功能
+- ✅ **自动心跳** - 内置连接健康检查和超时保护
+
+### SSE端点
+
+#### 主要端点（推荐使用）
+- **基础连接**: `GET /mcp/sse?token=your-api-token`
+- **带消息连接**: `GET /mcp/sse?token=your-token&method=<method>&params=<json>&id=<id>`
+- **状态查询**: `GET /mcp/sse/status`
+- **健康检查**: `GET /mcp/sse/health`
+- **使用说明**: `GET /mcp/sse/instructions`
+
+#### 管理端点
+- **SSE统计**: `GET /admin/sse/stats -H "Authorization: Bearer your-token"`
+- **会话清理**: `POST /admin/sse/cleanup -H "Authorization: Bearer your-token"`
+
+### SSE使用方法
+
+#### 1. 基础连接
+```bash
+curl -N -H "Accept: text/event-stream" \
+  "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-api-token"
+```
+
+#### 2. 发送MCP消息（通过URL参数）
+```bash
+# 初始化连接
+curl -N -H "Accept: text/event-stream" \
+  "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token&method=initialize&params=%7B%22protocolVersion%22%3A%222024-11-05%22%2C%22clientInfo%22%3A%7B%22name%22%3A%22Client%22%2C%22version%22%3A%221.0%22%7D%7D&id=1"
+
+# 获取工具列表
+curl -N -H "Accept: text/event-stream" \
+  "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token&method=tools/list&id=2"
+
+# 调用工具
+curl -N -H "Accept: text/event-stream" \
+  "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token&method=tools/call&params=%7B%22name%22%3A%22send_email%22%2C%22arguments%22%3A%7B%22to%22%3A%22test%40example.com%22%2C%22subject%22%3A%22Test%22%7D%7D&id=3"
+```
+
+#### 3. JavaScript客户端示例
+```javascript
+// 基础连接
+const eventSource = new EventSource('https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token');
+
+eventSource.addEventListener('connected', (event) => {
+  console.log('Connected:', JSON.parse(event.data));
+});
+
+eventSource.addEventListener('message', (event) => {
+  const response = JSON.parse(event.data);
+  console.log('MCP Response:', response);
+});
+
+// 发送消息的函数
+function sendMcpMessage(method, params, id) {
+  const url = new URL('https://mailwebhook-mcp.finbase.win/mcp/sse');
+  url.searchParams.set('token', 'your-token');
+  url.searchParams.set('method', method);
+  if (params) url.searchParams.set('params', JSON.stringify(params));
+  if (id) url.searchParams.set('id', id.toString());
+  
+  const es = new EventSource(url.toString());
+  es.addEventListener('message', (event) => {
+    const response = JSON.parse(event.data);
+    console.log('Response:', response);
+    es.close();
+  });
+  
+  return es;
+}
+
+// 使用示例
+sendMcpMessage('tools/list', null, 1);
+sendMcpMessage('tools/call', {name: 'send_email', arguments: {to: 'test@example.com'}}, 2);
+```
+
+### SSE事件类型
+- **connected** - 连接建立成功
+- **message** - JSON-RPC响应消息  
+- **heartbeat** - 心跳事件（每30秒）
+- **timeout** - 会话超时事件（5分钟）
+- **error** - 错误事件
+
+### SSE架构优势
+1. **无状态设计** - 适合Cloudflare Workers的无状态特性
+2. **URL参数传递** - 避免POST请求的复杂性和跨请求限制
+3. **实时响应** - 通过事件流提供即时反馈
+4. **自动管理** - 内置超时和清理机制
 
 ### 初次部署设置
 
@@ -95,18 +196,38 @@ TTL: 自动
 ### 测试命令
 
 #### 生产环境测试 ✅
+
+**基础HTTP API测试**：
 - 测试健康检查：`curl -X GET https://mailwebhook-mcp.finbase.win/health`
 - 测试 MCP 工具连接：`curl -X GET https://mailwebhook-mcp.finbase.win/mcp/tools -H "Authorization: Bearer your-token"`
 - 测试邮件发送工具：使用 MCP 客户端调用 `send_email` 工具
 - 测试缓存预热：`curl -X POST https://mailwebhook-mcp.finbase.win/admin/cache/warmup -H "Authorization: Bearer your-token"`
 - 清除模板缓存：`curl -X DELETE https://mailwebhook-mcp.finbase.win/admin/cache/templates -H "Authorization: Bearer your-token"`
 
+**SSE模式测试** 🆕：
+- 测试SSE健康检查：`curl -X GET "https://mailwebhook-mcp.finbase.win/mcp/sse/health?token=your-token"`
+- 测试SSE使用说明：`curl -X GET "https://mailwebhook-mcp.finbase.win/mcp/sse/instructions?token=your-token"`
+- 测试SSE基础连接：`curl -N -H "Accept: text/event-stream" "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token"`
+- 测试SSE ping：`curl -N -H "Accept: text/event-stream" "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token&method=ping&id=1"`
+- 测试SSE工具列表：`curl -N -H "Accept: text/event-stream" "https://mailwebhook-mcp.finbase.win/mcp/sse?token=your-token&method=tools/list&id=2"`
+- 测试SSE统计：`curl -X GET "https://mailwebhook-mcp.finbase.win/admin/sse/stats" -H "Authorization: Bearer your-token"`
+
 #### 开发环境测试
+
+**基础HTTP API测试**：
 - 测试健康检查：`curl -X GET https://mailwebhook-mcp-dev.finbase.win/health`
 - 测试 MCP 工具连接：`curl -X GET https://mailwebhook-mcp-dev.finbase.win/mcp/tools -H "Authorization: Bearer your-token"`
 - 测试邮件发送工具：使用 MCP 客户端调用 `send_email` 工具
 - 测试缓存预热：`curl -X POST https://mailwebhook-mcp-dev.finbase.win/admin/cache/warmup -H "Authorization: Bearer your-token"`
 - 清除模板缓存：`curl -X DELETE https://mailwebhook-mcp-dev.finbase.win/admin/cache/templates -H "Authorization: Bearer your-token"`
+
+**SSE模式测试** 🆕：
+- 测试SSE健康检查：`curl -X GET "https://mailwebhook-mcp-dev.finbase.win/mcp/sse/health?token=your-token"`
+- 测试SSE使用说明：`curl -X GET "https://mailwebhook-mcp-dev.finbase.win/mcp/sse/instructions?token=your-token"`
+- 测试SSE基础连接：`curl -N -H "Accept: text/event-stream" "https://mailwebhook-mcp-dev.finbase.win/mcp/sse?token=your-token"`
+- 测试SSE ping：`curl -N -H "Accept: text/event-stream" "https://mailwebhook-mcp-dev.finbase.win/mcp/sse?token=your-token&method=ping&id=1"`
+- 测试SSE工具列表：`curl -N -H "Accept: text/event-stream" "https://mailwebhook-mcp-dev.finbase.win/mcp/sse?token=your-token&method=tools/list&id=2"`
+- 测试SSE统计：`curl -X GET "https://mailwebhook-mcp-dev.finbase.win/admin/sse/stats" -H "Authorization: Bearer your-token"`
 
 ### 安全监控命令
 
@@ -166,6 +287,27 @@ TTL: 自动
 - 支持服务绑定和传统 HTTP API 双模式
 - 自动重试、超时控制和错误处理
 - 智能选择最佳通信方式
+
+### SSE传输组件 🆕
+
+**简化SSE传输层 (src/transports/sseTransportSimplified.ts)**
+- 专为Cloudflare Workers环境优化的SSE实现
+- 支持完整的MCP JSON-RPC 2.0协议
+- 通过URL参数实现双向通信，避免跨请求状态共享
+- 内置心跳、超时和错误处理机制
+
+**SSE处理器 (src/handlers/mcpHandlerSSESimplified.ts)**
+- 扩展标准MCP处理器以支持SSE传输
+- 实现无状态的会话管理
+- 提供SSE状态查询和健康检查功能
+- 包含详细的使用说明和示例代码
+
+**实验性SSE组件**：
+- **复杂SSE传输层 (src/transports/sseTransport.ts)** - 完整的有状态SSE实现
+- **会话管理器 (src/session/sessionManager.ts)** - 跨请求会话状态管理
+- **扩展SSE处理器 (src/handlers/mcpHandlerSSE.ts)** - 支持复杂会话的MCP处理器
+
+注意：实验性组件展示了更完整的SSE实现，但由于Cloudflare Workers的I/O限制，在生产环境中推荐使用简化版本。
 
 ### 关键依赖
 - `@modelcontextprotocol/sdk` - MCP 协议 SDK

@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import { Env } from './types';
 import { McpHandler } from './handlers/mcpHandler';
+import { McpHandlerSSESimplified } from './handlers/mcpHandlerSSESimplified';
+import { McpStreamableHttpHandler } from './handlers/mcpStreamableHttp';
+import { McpCloudflareCompatibleHandler } from './handlers/mcpCloudflareCompatible';
 import { createSecurityMiddleware } from './middleware/security';
 
 // 创建 Hono 应用实例
@@ -23,9 +26,15 @@ app.notFound((c) => {
     message: `路径 ${c.req.path} 未找到`,
     availableEndpoints: [
       'GET /health - 健康检查',
+      'POST /register - MCP客户端注册',
+      'GET /.well-known/oauth-authorization-server - OAuth服务器元数据',
       'POST /mcp/initialize - MCP 初始化',
       'GET /mcp/tools - 获取工具列表',
-      'POST /mcp/tools/call - 调用工具'
+      'POST /mcp/tools/call - 调用工具',
+      'POST/GET /mcp/v1 - 标准 MCP Streamable HTTP 端点',
+      'GET /mcp/sse - SSE 连接端点（推荐）',
+      'POST /mcp/sse/message?sessionId=xxx - SSE 消息端点',
+      'GET /mcp/sse/simple - 简化 SSE 连接端点（Workers 优化）'
     ]
   }, 404);
 });
@@ -87,8 +96,14 @@ app.use('*', async (c, next) => {
   return await security.rateLimit(c, next);
 });
 
-// 认证中间件 (仅应用于受保护的路由)
+// 认证中间件 (仅应用于受保护的路由，排除自管理认证的路径)
 app.use('/mcp/*', async (c, next) => {
+  // 跳过自管理认证的路径
+  if (c.req.path === '/mcp/sse' || c.req.path.startsWith('/mcp/sse/message')) {
+    await next();
+    return;
+  }
+  
   const security = createSecurityMiddleware(c.env);
   return await security.auth(c, next);
 });
@@ -104,7 +119,7 @@ app.get('/health', async (c) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     server: c.env.MCP_SERVER_NAME || 'QQ Webhook MCP Server',
-    version: c.env.MCP_SERVER_VERSION || '1.0.0',
+    version: c.env.MCP_SERVER_VERSION || '1.0.1',
     environment: c.env.ENVIRONMENT || 'production',
     client: {
       type: c.env.QQWEBHOOK_SERVICE ? 'service-binding' : 'http-api',
@@ -119,6 +134,21 @@ app.route('/mcp', createMcpRoutes());
 // 创建 MCP 路由
 function createMcpRoutes() {
   const mcpApp = new Hono<{ Bindings: Env }>();
+  
+  // === MCP Streamable HTTP 端点（推荐，符合 2024-11-05 标准）===
+  
+  // 标准 MCP 端点（支持 POST 和 GET）
+  mcpApp.post('/v1', async (c) => {
+    const handler = new McpStreamableHttpHandler(c.env);
+    return await handler.handleStreamableHttp(c);
+  });
+  
+  mcpApp.get('/v1', async (c) => {
+    const handler = new McpStreamableHttpHandler(c.env);
+    return await handler.handleStreamableHttp(c);
+  });
+  
+  // === 传统的 HTTP MCP 路由（保持兼容性）===
   
   // MCP 初始化
   mcpApp.post('/initialize', async (c) => {
@@ -138,6 +168,65 @@ function createMcpRoutes() {
     return await handler.handleCallTool(c);
   });
   
+  
+  // === SSE MCP 路由（双端点架构）===
+  
+  // SSE 连接端点
+  mcpApp.get('/sse', async (c) => {
+    const handler = new McpCloudflareCompatibleHandler(c.env);
+    return await handler.handleSSEConnection(c);
+  });
+  
+  // SSE 消息端点
+  mcpApp.post('/sse/message', async (c) => {
+    const handler = new McpCloudflareCompatibleHandler(c.env);
+    return await handler.handleSSEMessage(c);
+  });
+  
+  // === 简化 SSE MCP 路由（Workers 优化版本）===
+  
+  // 简化的SSE连接端点
+  mcpApp.get('/sse/simple', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSimplifiedSSEConnection(c);
+  });
+  
+  // SSE 状态查询端点
+  mcpApp.get('/sse/status', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSSEStatus(c);
+  });
+  
+  // SSE 健康检查端点
+  mcpApp.get('/sse/health', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSSEHealthCheck(c);
+  });
+  
+  // SSE 使用说明端点
+  mcpApp.get('/sse/instructions', async (c) => {
+    const handler = new McpHandlerSSESimplified(c.env);
+    return await handler.handleSSEInstructions(c);
+  });
+  
+  // === 保留的复杂SSE路由（实验性，存在Workers限制）===
+  
+  // 注意：以下端点存在Cloudflare Workers的I/O共享限制，仅用于展示完整实现
+  mcpApp.get('/sse/experimental', async (c) => {
+    const handler = new McpHandlerSSE(c.env);
+    return await handler.handleSSEConnection(c);
+  });
+  
+  mcpApp.post('/sse/experimental/:sessionId/messages', async (c) => {
+    const handler = new McpHandlerSSE(c.env);
+    return await handler.handleSSEMessage(c);
+  });
+  
+  mcpApp.get('/sse/experimental/:sessionId/status', async (c) => {
+    const handler = new McpHandlerSSE(c.env);
+    return await handler.handleSSESessionStatus(c);
+  });
+  
   // 处理 CORS 预检请求
   mcpApp.options('*', async (c) => {
     const handler = new McpHandler(c.env);
@@ -147,19 +236,130 @@ function createMcpRoutes() {
   return mcpApp;
 }
 
+// MCP 客户端注册端点（OAuth扩展）
+app.post('/register', async (c) => {
+  try {
+    const body = await c.req.json();
+    
+    // 验证注册请求
+    const clientRegistration = {
+      client_name: body.client_name || 'Unknown MCP Client',
+      client_uri: body.client_uri,
+      redirect_uris: body.redirect_uris || [],
+      grant_types: body.grant_types || ['authorization_code'],
+      response_types: body.response_types || ['code'],
+      scope: body.scope || 'mcp:tools',
+      token_endpoint_auth_method: body.token_endpoint_auth_method || 'client_secret_basic'
+    };
+
+    // 生成客户端凭据
+    const clientId = `mcp-client-${crypto.randomUUID()}`;
+    const clientSecret = `mcp-secret-${crypto.randomUUID()}`;
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const expiresAt = issuedAt + (30 * 24 * 60 * 60); // 30天过期
+
+    // 构建注册响应
+    const registrationResponse = {
+      client_id: clientId,
+      client_secret: clientSecret,
+      client_id_issued_at: issuedAt,
+      client_secret_expires_at: expiresAt,
+      ...clientRegistration,
+      registration_access_token: `mcp-reg-${crypto.randomUUID()}`,
+      registration_client_uri: `${new URL(c.req.url).origin}/register/${clientId}`
+    };
+
+    console.log(`MCP客户端注册成功: ${clientRegistration.client_name} (${clientId})`);
+
+    return c.json(registrationResponse, 201);
+  } catch (error) {
+    console.error('MCP客户端注册失败:', error);
+    
+    return c.json({
+      error: 'invalid_client_metadata',
+      error_description: '客户端注册数据无效或格式错误',
+      error_uri: 'https://tools.ietf.org/html/rfc7591#section-3.2.2'
+    }, 400);
+  }
+});
+
+// 查询已注册客户端信息
+app.get('/register/:clientId', async (c) => {
+  const clientId = c.req.param('clientId');
+  
+  // 在实际实现中，这里应该从数据库查询客户端信息
+  // 当前返回占位符响应
+  return c.json({
+    client_id: clientId,
+    client_name: 'Registered MCP Client',
+    registered_at: new Date().toISOString(),
+    status: 'active'
+  });
+});
+
+// OAuth授权服务器元数据端点
+app.get('/.well-known/oauth-authorization-server', (c) => {
+  const baseUrl = new URL(c.req.url).origin;
+  
+  return c.json({
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/authorize`,
+    token_endpoint: `${baseUrl}/token`,
+    registration_endpoint: `${baseUrl}/register`,
+    jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+    scopes_supported: ['mcp:tools', 'mcp:resources', 'mcp:prompts'],
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+    code_challenge_methods_supported: ['S256'],
+    mcp_server_info: {
+      name: 'Mail Webhook MCP Server',
+      version: '1.0.1',
+      capabilities: ['tools', 'sse']
+    }
+  });
+});
+
 // API 信息端点
 app.get('/', (c) => {
   return c.json({
     name: c.env.MCP_SERVER_NAME || 'QQ Webhook MCP Server',
-    version: c.env.MCP_SERVER_VERSION || '1.0.0',
+    version: c.env.MCP_SERVER_VERSION || '1.0.1',
     description: '基于 Cloudflare Workers 的 MCP 服务器，为 AI 助手提供邮件发送功能工具',
     protocol: 'MCP (Model Context Protocol)',
     endpoints: {
       health: 'GET /health',
+      oauth: {
+        metadata: 'GET /.well-known/oauth-authorization-server',
+        register: 'POST /register',
+        clientInfo: 'GET /register/{clientId}'
+      },
       mcp: {
-        initialize: 'POST /mcp/initialize',
-        listTools: 'GET /mcp/tools',
-        callTool: 'POST /mcp/tools/call'
+        streamableHttp: {
+          note: 'Standard MCP 2024-11-05 Streamable HTTP transport',
+          endpoint: 'POST/GET /mcp/v1',
+          description: 'Single endpoint supporting both HTTP requests and SSE streaming'
+        },
+        http: {
+          note: 'Legacy HTTP endpoints for compatibility',
+          initialize: 'POST /mcp/initialize',
+          listTools: 'GET /mcp/tools',
+          callTool: 'POST /mcp/tools/call'
+        },
+        sse: {
+          simplified: {
+            connect: 'GET /mcp/sse?token=your-api-token',
+            withMessage: 'GET /mcp/sse?token=your-token&method=<method>&params=<json>&id=<id>',
+            status: 'GET /mcp/sse/status',
+            health: 'GET /mcp/sse/health',
+            instructions: 'GET /mcp/sse/instructions'
+          },
+          experimental: {
+            note: 'Experimental endpoints with Cloudflare Workers limitations',
+            connect: 'GET /mcp/sse/experimental',
+            messages: 'POST /mcp/sse/experimental/{sessionId}/messages'
+          }
+        }
       }
     },
     tools: [
@@ -365,6 +565,68 @@ app.get('/admin/security/health', async (c) => {
     }, 500);
   }
 });
+
+// === SSE 管理端点 ===
+
+// 获取MCP传输统计信息
+app.get('/admin/mcp/stats', async (c) => {
+  try {
+    const streamableHandler = new McpStreamableHttpHandler(c.env);
+    const cfCompatibleHandler = new McpCloudflareCompatibleHandler(c.env);
+    const simplifiedHandler = new McpHandlerSSESimplified(c.env);
+    
+    return c.json({
+      success: true,
+      data: {
+        streamableHttp: {
+          status: 'active',
+          description: '标准MCP Streamable HTTP传输，符合2024-11-05协议',
+          features: ['双向通信', '会话管理', 'SSE流式响应', '批量请求'],
+          sessions: streamableHandler.getSessionStats(),
+          endpoints: {
+            standard: 'POST/GET /mcp/v1',
+            compatibility: ['POST /mcp/initialize', 'GET /mcp/tools', 'POST /mcp/tools/call']
+          }
+        },
+        sseStandard: {
+          status: 'active',
+          description: 'SSE双端点实现，推荐用于MCP客户端',
+          features: ['双端点架构', '简化消息处理', 'MCP客户端优化', '稳定可靠'],
+          sessions: cfCompatibleHandler.getSessionStats(),
+          endpoints: {
+            connection: 'GET /mcp/sse',
+            message: 'POST /mcp/sse/message?sessionId=xxx'
+          }
+        },
+        sseSimplified: {
+          status: 'active',
+          description: '简化SSE实现，适合Cloudflare Workers环境',
+          features: ['无状态', 'URL参数消息', '单请求生命周期'],
+          endpoint: 'GET /mcp/sse/simple'
+        },
+        recommendations: {
+          primary: 'Use Streamable HTTP (/mcp/v1) - Most stable and feature-complete',
+          sse: 'Use SSE (/mcp/sse) - Real-time streaming for MCP clients',
+          simplified: 'Use Simplified SSE (/mcp/sse/simple) - Worker optimized'
+        },
+        externalServers: {
+          cloudflare: {
+            url: 'https://docs.mcp.cloudflare.com/sse',
+            description: 'Cloudflare官方MCP文档服务器',
+            status: 'available'
+          }
+        },
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : '获取MCP统计信息失败'
+    }, 500);
+  }
+});
+
 
 // 导出默认处理器
 export default {

@@ -1,0 +1,67 @@
+{
+  "mcpServers": {
+    "mailwebhook-mcp": {
+      "transport": {
+        "type": "http",
+        "url": "https://mailwebhook-mcp.finbase.win/mcp/v1"
+      },
+      "auth": {
+        "type": "bearer",
+        "token": "Y0kogawa2025"
+      },
+      "description": "邮件发送 MCP 服务器 - 支持邮件发送、模板管理和状态查询",
+      "capabilities": ["tools"],
+      "tools": [
+        {
+          "name": "send_email",
+          "description": "发送邮件（支持同步/异步、模板/自定义内容）"
+        },
+        {
+          "name": "list_email_templates",
+          "description": "获取所有可用的邮件模板列表"
+        },
+        {
+          "name": "get_email_template", 
+          "description": "获取指定邮件模板的详细信息"
+        },
+        {
+          "name": "get_email_status",
+          "description": "查询指定邮件的发送状态"
+        }
+      ]
+    },
+    "mailwebhook-mcp-sse": {
+      "transport": {
+        "type": "sse",
+        "url": "https://mailwebhook-mcp.finbase.win/mcp/sse?token=Y0kogawa2025"
+      },
+      "description": "邮件发送 MCP 服务器 (SSE模式) - 实时流式传输",
+      "capabilities": ["tools"],
+      "tools": [
+        "send_email",
+        "list_email_templates", 
+        "get_email_template",
+        "get_email_status"
+      ]
+    },
+    "cloudflare-docs": {
+      "transport": {
+        "type": "sse",
+        "url": "https://docs.mcp.cloudflare.com/sse"
+      },
+      "description": "Cloudflare 官方文档 MCP 服务器",
+      "capabilities": ["tools", "resources"]
+    }
+  },
+  "client": {
+    "name": "Windsurf IDE",
+    "version": "1.0.0",
+    "protocolVersion": "2024-11-05"
+  },
+  "settings": {
+    "timeout": 30000,
+    "retries": 3,
+    "logLevel": "info",
+    "defaultTransport": "http"
+  }
+}

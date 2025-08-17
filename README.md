@@ -7,7 +7,9 @@
 - ✅ **邮件发送**: 支持同步/异步发送，支持纯文本和 HTML 格式
 - ✅ **模板管理**: 查询和使用邮件模板，带智能缓存
 - ✅ **状态跟踪**: 查询邮件发送状态和历史记录
-- ✅ **安全认证**: API 令牌认证，CORS 保护
+- ✅ **多传输协议**: 支持 HTTP REST、SSE 实时流和 Streamable HTTP
+- ✅ **MCP 协议兼容**: 完全符合 Model Context Protocol 2024-11-05 标准
+- ✅ **安全认证**: API 令牌认证，CORS 保护，Bearer Token 支持
 - ✅ **服务绑定**: 使用 Cloudflare 服务绑定实现高性能 Worker 间通信
 - ✅ **智能缓存**: 基于 Cloudflare Cache API 的模板缓存系统
 - ✅ **错误处理**: 完善的错误处理和重试机制
@@ -101,17 +103,126 @@ npm run deploy:prod
 **参数：**
 - `messageId` (string, 必需): 邮件消息ID
 
-## API 端点
+## MCP 传输协议
 
-### 核心端点
+本服务器支持多种 MCP 传输协议，可根据需要选择最适合的方式：
+
+### 🔥 推荐：Streamable HTTP（最稳定）
+
+**最符合 MCP 2024-11-05 标准，支持批量请求和双向通信**
+
+```bash
+# 初始化连接
+curl -X POST "https://your-domain.com/mcp/v1" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"Client","version":"1.0"}}}'
+
+# 获取工具列表
+curl -X POST "https://your-domain.com/mcp/v1" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"2","method":"tools/list"}'
+
+# 调用工具
+curl -X POST "https://your-domain.com/mcp/v1" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"3","method":"tools/call","params":{"name":"send_email","arguments":{"to":"test@example.com","subject":"Test"}}}'
+```
+
+### 📡 SSE 实时流传输
+
+**适合需要实时通信的 MCP 客户端，双端点架构**
+
+```bash
+# 1. 建立 SSE 连接（获取会话ID）
+curl "https://your-domain.com/mcp/sse?token=YOUR_TOKEN" \
+  -H "Accept: text/event-stream"
+# 返回: event: endpoint\ndata: /mcp/sse/message?sessionId=xxx
+
+# 2. 发送消息到会话端点
+curl -X POST "https://your-domain.com/mcp/sse/message?sessionId=SESSION_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2024-11-05"}}'
+```
+
+### 🔧 传统 HTTP 端点（兼容性）
+
+**向后兼容的独立端点**
+
+```bash
+# MCP 初始化
+curl -X POST "https://your-domain.com/mcp/initialize" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json"
+
+# 获取工具列表  
+curl -X GET "https://your-domain.com/mcp/tools" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# 调用工具
+curl -X POST "https://your-domain.com/mcp/tools/call" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"params":{"name":"send_email","arguments":{"to":"test@example.com","subject":"Test"}}}'
+```
+
+## MCP 客户端配置
+
+### HTTP 模式配置（推荐）
+
+```json
+{
+  "mcpServers": {
+    "mailwebhook-mcp": {
+      "transport": {
+        "type": "http",
+        "url": "https://your-domain.com/mcp/v1"
+      },
+      "auth": {
+        "type": "bearer",
+        "token": "YOUR_API_TOKEN"
+      },
+      "description": "邮件发送 MCP 服务器"
+    }
+  }
+}
+```
+
+### SSE 模式配置
+
+```json
+{
+  "mcpServers": {
+    "mailwebhook-mcp-sse": {
+      "transport": {
+        "type": "sse",
+        "url": "https://your-domain.com/mcp/sse?token=YOUR_API_TOKEN"
+      },
+      "description": "邮件发送 MCP 服务器 (SSE模式)"
+    }
+  }
+}
+```
+
+## API 端点参考
+
+### 核心 MCP 端点
+- `POST/GET /mcp/v1` - **Streamable HTTP 端点**（推荐）
+- `GET /mcp/sse` - **SSE 连接端点**
+- `POST /mcp/sse/message` - **SSE 消息端点**
+- `POST /mcp/initialize` - MCP 初始化（兼容性）
+- `GET /mcp/tools` - 获取工具列表（兼容性）
+- `POST /mcp/tools/call` - 调用工具（兼容性）
+
+### 系统端点
 - `GET /health` - 健康检查
-- `GET /` - API 信息
-- `POST /mcp/initialize` - MCP 初始化
-- `GET /mcp/tools` - 获取工具列表
-- `POST /mcp/tools/call` - 调用工具
+- `GET /` - API 信息和端点列表
 
 ### 管理端点（需认证）
 - `GET /admin/info` - 系统信息和配置状态
+- `GET /admin/mcp/stats` - MCP 传输协议统计信息
 - `POST /admin/cache/warmup` - 预热模板缓存
 - `DELETE /admin/cache/templates` - 清除模板缓存
 
