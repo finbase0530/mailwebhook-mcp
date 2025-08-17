@@ -25,6 +25,8 @@ app.notFound((c) => {
     message: `路径 ${c.req.path} 未找到`,
     availableEndpoints: [
       'GET /health - 健康检查',
+      'POST /register - MCP客户端注册',
+      'GET /.well-known/oauth-authorization-server - OAuth服务器元数据',
       'POST /mcp/initialize - MCP 初始化',
       'GET /mcp/tools - 获取工具列表',
       'POST /mcp/tools/call - 调用工具',
@@ -197,6 +199,90 @@ function createMcpRoutes() {
   return mcpApp;
 }
 
+// MCP 客户端注册端点（OAuth扩展）
+app.post('/register', async (c) => {
+  try {
+    const body = await c.req.json();
+    
+    // 验证注册请求
+    const clientRegistration = {
+      client_name: body.client_name || 'Unknown MCP Client',
+      client_uri: body.client_uri,
+      redirect_uris: body.redirect_uris || [],
+      grant_types: body.grant_types || ['authorization_code'],
+      response_types: body.response_types || ['code'],
+      scope: body.scope || 'mcp:tools',
+      token_endpoint_auth_method: body.token_endpoint_auth_method || 'client_secret_basic'
+    };
+
+    // 生成客户端凭据
+    const clientId = `mcp-client-${crypto.randomUUID()}`;
+    const clientSecret = `mcp-secret-${crypto.randomUUID()}`;
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const expiresAt = issuedAt + (30 * 24 * 60 * 60); // 30天过期
+
+    // 构建注册响应
+    const registrationResponse = {
+      client_id: clientId,
+      client_secret: clientSecret,
+      client_id_issued_at: issuedAt,
+      client_secret_expires_at: expiresAt,
+      ...clientRegistration,
+      registration_access_token: `mcp-reg-${crypto.randomUUID()}`,
+      registration_client_uri: `${new URL(c.req.url).origin}/register/${clientId}`
+    };
+
+    console.log(`MCP客户端注册成功: ${clientRegistration.client_name} (${clientId})`);
+
+    return c.json(registrationResponse, 201);
+  } catch (error) {
+    console.error('MCP客户端注册失败:', error);
+    
+    return c.json({
+      error: 'invalid_client_metadata',
+      error_description: '客户端注册数据无效或格式错误',
+      error_uri: 'https://tools.ietf.org/html/rfc7591#section-3.2.2'
+    }, 400);
+  }
+});
+
+// 查询已注册客户端信息
+app.get('/register/:clientId', async (c) => {
+  const clientId = c.req.param('clientId');
+  
+  // 在实际实现中，这里应该从数据库查询客户端信息
+  // 当前返回占位符响应
+  return c.json({
+    client_id: clientId,
+    client_name: 'Registered MCP Client',
+    registered_at: new Date().toISOString(),
+    status: 'active'
+  });
+});
+
+// OAuth授权服务器元数据端点
+app.get('/.well-known/oauth-authorization-server', (c) => {
+  const baseUrl = new URL(c.req.url).origin;
+  
+  return c.json({
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/authorize`,
+    token_endpoint: `${baseUrl}/token`,
+    registration_endpoint: `${baseUrl}/register`,
+    jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+    scopes_supported: ['mcp:tools', 'mcp:resources', 'mcp:prompts'],
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+    code_challenge_methods_supported: ['S256'],
+    mcp_server_info: {
+      name: 'Mail Webhook MCP Server',
+      version: '1.0.0',
+      capabilities: ['tools', 'sse']
+    }
+  });
+});
+
 // API 信息端点
 app.get('/', (c) => {
   return c.json({
@@ -206,6 +292,11 @@ app.get('/', (c) => {
     protocol: 'MCP (Model Context Protocol)',
     endpoints: {
       health: 'GET /health',
+      oauth: {
+        metadata: 'GET /.well-known/oauth-authorization-server',
+        register: 'POST /register',
+        clientInfo: 'GET /register/{clientId}'
+      },
       mcp: {
         http: {
           initialize: 'POST /mcp/initialize',
