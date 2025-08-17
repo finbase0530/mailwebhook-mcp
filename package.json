@@ -1,6 +1,6 @@
 {
   "name": "mailwebhook-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "基于 Cloudflare Workers 的 MCP 服务器，为 AI 助手提供邮件发送功能工具",
   "main": "src/index.ts",
   "scripts": {

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { Env } from './types';
 import { McpHandler } from './handlers/mcpHandler';
-import { McpHandlerSSE } from './handlers/mcpHandlerSSE';
 import { McpHandlerSSESimplified } from './handlers/mcpHandlerSSESimplified';
+import { McpStreamableHttpHandler } from './handlers/mcpStreamableHttp';
+import { McpCloudflareCompatibleHandler } from './handlers/mcpCloudflareCompatible';
 import { createSecurityMiddleware } from './middleware/security';
 
 // 创建 Hono 应用实例
@@ -30,8 +31,10 @@ app.notFound((c) => {
       'POST /mcp/initialize - MCP 初始化',
       'GET /mcp/tools - 获取工具列表',
       'POST /mcp/tools/call - 调用工具',
-      'GET /mcp/sse - SSE 连接端点',
-      'POST /mcp/sse/{sessionId}/messages - SSE 消息发送'
+      'POST/GET /mcp/v1 - 标准 MCP Streamable HTTP 端点',
+      'GET /mcp/sse - SSE 连接端点（推荐）',
+      'POST /mcp/sse/message?sessionId=xxx - SSE 消息端点',
+      'GET /mcp/sse/simple - 简化 SSE 连接端点（Workers 优化）'
     ]
   }, 404);
 });
@@ -93,8 +96,14 @@ app.use('*', async (c, next) => {
   return await security.rateLimit(c, next);
 });
 
-// 认证中间件 (仅应用于受保护的路由)
+// 认证中间件 (仅应用于受保护的路由，排除自管理认证的路径)
 app.use('/mcp/*', async (c, next) => {
+  // 跳过自管理认证的路径
+  if (c.req.path === '/mcp/sse' || c.req.path.startsWith('/mcp/sse/message')) {
+    await next();
+    return;
+  }
+  
   const security = createSecurityMiddleware(c.env);
   return await security.auth(c, next);
 });
@@ -110,7 +119,7 @@ app.get('/health', async (c) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     server: c.env.MCP_SERVER_NAME || 'QQ Webhook MCP Server',
-    version: c.env.MCP_SERVER_VERSION || '1.0.0',
+    version: c.env.MCP_SERVER_VERSION || '1.0.1',
     environment: c.env.ENVIRONMENT || 'production',
     client: {
       type: c.env.QQWEBHOOK_SERVICE ? 'service-binding' : 'http-api',
@@ -126,7 +135,20 @@ app.route('/mcp', createMcpRoutes());
 function createMcpRoutes() {
   const mcpApp = new Hono<{ Bindings: Env }>();
   
-  // === 传统的 HTTP MCP 路由 ===
+  // === MCP Streamable HTTP 端点（推荐，符合 2024-11-05 标准）===
+  
+  // 标准 MCP 端点（支持 POST 和 GET）
+  mcpApp.post('/v1', async (c) => {
+    const handler = new McpStreamableHttpHandler(c.env);
+    return await handler.handleStreamableHttp(c);
+  });
+  
+  mcpApp.get('/v1', async (c) => {
+    const handler = new McpStreamableHttpHandler(c.env);
+    return await handler.handleStreamableHttp(c);
+  });
+  
+  // === 传统的 HTTP MCP 路由（保持兼容性）===
   
   // MCP 初始化
   mcpApp.post('/initialize', async (c) => {
@@ -146,10 +168,25 @@ function createMcpRoutes() {
     return await handler.handleCallTool(c);
   });
   
-  // === SSE MCP 路由 ===
   
-  // 简化的SSE连接端点（推荐使用）
+  // === SSE MCP 路由（双端点架构）===
+  
+  // SSE 连接端点
   mcpApp.get('/sse', async (c) => {
+    const handler = new McpCloudflareCompatibleHandler(c.env);
+    return await handler.handleSSEConnection(c);
+  });
+  
+  // SSE 消息端点
+  mcpApp.post('/sse/message', async (c) => {
+    const handler = new McpCloudflareCompatibleHandler(c.env);
+    return await handler.handleSSEMessage(c);
+  });
+  
+  // === 简化 SSE MCP 路由（Workers 优化版本）===
+  
+  // 简化的SSE连接端点
+  mcpApp.get('/sse/simple', async (c) => {
     const handler = new McpHandlerSSESimplified(c.env);
     return await handler.handleSimplifiedSSEConnection(c);
   });
@@ -277,7 +314,7 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
     code_challenge_methods_supported: ['S256'],
     mcp_server_info: {
       name: 'Mail Webhook MCP Server',
-      version: '1.0.0',
+      version: '1.0.1',
       capabilities: ['tools', 'sse']
     }
   });
@@ -287,7 +324,7 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
 app.get('/', (c) => {
   return c.json({
     name: c.env.MCP_SERVER_NAME || 'QQ Webhook MCP Server',
-    version: c.env.MCP_SERVER_VERSION || '1.0.0',
+    version: c.env.MCP_SERVER_VERSION || '1.0.1',
     description: '基于 Cloudflare Workers 的 MCP 服务器，为 AI 助手提供邮件发送功能工具',
     protocol: 'MCP (Model Context Protocol)',
     endpoints: {
@@ -298,17 +335,25 @@ app.get('/', (c) => {
         clientInfo: 'GET /register/{clientId}'
       },
       mcp: {
+        streamableHttp: {
+          note: 'Standard MCP 2024-11-05 Streamable HTTP transport',
+          endpoint: 'POST/GET /mcp/v1',
+          description: 'Single endpoint supporting both HTTP requests and SSE streaming'
+        },
         http: {
+          note: 'Legacy HTTP endpoints for compatibility',
           initialize: 'POST /mcp/initialize',
           listTools: 'GET /mcp/tools',
           callTool: 'POST /mcp/tools/call'
         },
         sse: {
-          connect: 'GET /mcp/sse?token=your-api-token',
-          withMessage: 'GET /mcp/sse?token=your-token&method=<method>&params=<json>&id=<id>',
-          status: 'GET /mcp/sse/status',
-          health: 'GET /mcp/sse/health',
-          instructions: 'GET /mcp/sse/instructions',
+          simplified: {
+            connect: 'GET /mcp/sse?token=your-api-token',
+            withMessage: 'GET /mcp/sse?token=your-token&method=<method>&params=<json>&id=<id>',
+            status: 'GET /mcp/sse/status',
+            health: 'GET /mcp/sse/health',
+            instructions: 'GET /mcp/sse/instructions'
+          },
           experimental: {
             note: 'Experimental endpoints with Cloudflare Workers limitations',
             connect: 'GET /mcp/sse/experimental',
@@ -523,28 +568,53 @@ app.get('/admin/security/health', async (c) => {
 
 // === SSE 管理端点 ===
 
-// 获取SSE统计信息
-app.get('/admin/sse/stats', async (c) => {
+// 获取MCP传输统计信息
+app.get('/admin/mcp/stats', async (c) => {
   try {
+    const streamableHandler = new McpStreamableHttpHandler(c.env);
+    const cfCompatibleHandler = new McpCloudflareCompatibleHandler(c.env);
     const simplifiedHandler = new McpHandlerSSESimplified(c.env);
-    const complexHandler = new McpHandlerSSE(c.env);
     
     return c.json({
       success: true,
       data: {
-        simplified: {
+        streamableHttp: {
+          status: 'active',
+          description: '标准MCP Streamable HTTP传输，符合2024-11-05协议',
+          features: ['双向通信', '会话管理', 'SSE流式响应', '批量请求'],
+          sessions: streamableHandler.getSessionStats(),
+          endpoints: {
+            standard: 'POST/GET /mcp/v1',
+            compatibility: ['POST /mcp/initialize', 'GET /mcp/tools', 'POST /mcp/tools/call']
+          }
+        },
+        sseStandard: {
+          status: 'active',
+          description: 'SSE双端点实现，推荐用于MCP客户端',
+          features: ['双端点架构', '简化消息处理', 'MCP客户端优化', '稳定可靠'],
+          sessions: cfCompatibleHandler.getSessionStats(),
+          endpoints: {
+            connection: 'GET /mcp/sse',
+            message: 'POST /mcp/sse/message?sessionId=xxx'
+          }
+        },
+        sseSimplified: {
           status: 'active',
           description: '简化SSE实现，适合Cloudflare Workers环境',
-          features: ['无状态', 'URL参数消息', '单请求生命周期']
-        },
-        experimental: {
-          sessions: complexHandler.getSessionStats(),
-          health: complexHandler.getSSEHealthCheck(),
-          note: '实验性实现，存在Workers I/O限制'
+          features: ['无状态', 'URL参数消息', '单请求生命周期'],
+          endpoint: 'GET /mcp/sse/simple'
         },
         recommendations: {
-          production: 'Use simplified SSE (/mcp/sse)',
-          testing: 'Use experimental SSE (/mcp/sse/experimental) for advanced features'
+          primary: 'Use Streamable HTTP (/mcp/v1) - Most stable and feature-complete',
+          sse: 'Use SSE (/mcp/sse) - Real-time streaming for MCP clients',
+          simplified: 'Use Simplified SSE (/mcp/sse/simple) - Worker optimized'
+        },
+        externalServers: {
+          cloudflare: {
+            url: 'https://docs.mcp.cloudflare.com/sse',
+            description: 'Cloudflare官方MCP文档服务器',
+            status: 'available'
+          }
         },
         timestamp: new Date().toISOString()
       }
@@ -552,114 +622,11 @@ app.get('/admin/sse/stats', async (c) => {
   } catch (error) {
     return c.json({
       success: false,
-      error: error instanceof Error ? error.message : '获取SSE统计信息失败'
+      error: error instanceof Error ? error.message : '获取MCP统计信息失败'
     }, 500);
   }
 });
 
-// 清理过期的SSE会话
-app.post('/admin/sse/cleanup', async (c) => {
-  try {
-    const handler = new McpHandlerSSE(c.env);
-    const cleanedCount = handler.cleanupExpiredSessions();
-    
-    return c.json({
-      success: true,
-      message: `已清理 ${cleanedCount} 个过期的SSE会话`,
-      data: { cleanedSessions: cleanedCount }
-    });
-  } catch (error) {
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : 'SSE会话清理失败'
-    }, 500);
-  }
-});
-
-// 向所有SSE会话发送心跳
-app.post('/admin/sse/heartbeat', async (c) => {
-  try {
-    const handler = new McpHandlerSSE(c.env);
-    const result = await handler.sendHeartbeatToAll();
-    
-    return c.json({
-      success: true,
-      message: `心跳发送完成：成功 ${result.sent} 个，失败 ${result.failed} 个`,
-      data: result
-    });
-  } catch (error) {
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : '发送心跳失败'
-    }, 500);
-  }
-});
-
-// 向所有SSE会话广播消息
-app.post('/admin/sse/broadcast', async (c) => {
-  try {
-    const body = await c.req.json();
-    const { message } = body;
-    
-    if (!message) {
-      return c.json({
-        success: false,
-        error: '缺少消息内容'
-      }, 400);
-    }
-    
-    const handler = new McpHandlerSSE(c.env);
-    const result = await handler.broadcastToAllSessions(message);
-    
-    return c.json({
-      success: true,
-      message: `广播完成：成功 ${result.sent} 个，失败 ${result.failed} 个`,
-      data: result
-    });
-  } catch (error) {
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : '广播消息失败'
-    }, 500);
-  }
-});
-
-// 向特定SSE会话发送消息
-app.post('/admin/sse/send/:sessionId', async (c) => {
-  try {
-    const sessionId = c.req.param('sessionId');
-    const body = await c.req.json();
-    const { message } = body;
-    
-    if (!message) {
-      return c.json({
-        success: false,
-        error: '缺少消息内容'
-      }, 400);
-    }
-    
-    const handler = new McpHandlerSSE(c.env);
-    const success = await handler.sendToSession(sessionId, message);
-    
-    if (success) {
-      return c.json({
-        success: true,
-        message: '消息发送成功',
-        data: { sessionId }
-      });
-    } else {
-      return c.json({
-        success: false,
-        error: '会话不存在或发送失败'
-      }, 404);
-    }
-  } catch (error) {
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : '发送消息失败'
-    }, 500);
-  }
-});
 
 // 导出默认处理器
 export default {
